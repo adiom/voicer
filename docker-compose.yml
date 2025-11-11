@@ -1,0 +1,64 @@
+# Whisper Transcription Service - Docker Compose
+
+version: '3.8'
+
+services:
+  whisper-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whisper-transcription-service
+    ports:
+      - "8000:8000"
+    volumes:
+      # Персистентные данные
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./results:/app/results
+      # Кеш моделей Whisper (чтобы не скачивать каждый раз)
+      - whisper-models:/root/.cache/huggingface
+      # Конфигурация (опционально)
+      - ./config.yaml:/app/config.yaml
+    environment:
+      # Настройки сервиса
+      - SERVICE_HOST=0.0.0.0
+      - SERVICE_PORT=8000
+
+      # Whisper настройки
+      - WHISPER_MODEL=small
+      - WHISPER_DEVICE=auto
+      - WHISPER_COMPUTE_TYPE=int8
+
+      # База данных
+      - DB_PATH=/app/data/transcription_service.db
+
+      # Логирование
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Опционально: Nginx reverse proxy
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: whisper-nginx
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - whisper-service
+  #   restart: unless-stopped
+
+volumes:
+  whisper-models:
+    driver: local
+
+networks:
+  default:
+    name: whisper-network

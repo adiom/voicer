@@ -1,0 +1,103 @@
+# Конфигурация Whisper Transcription Service
+
+whisper:
+  # Модель по умолчанию (tiny/base/small/medium/large/large-v2/large-v3)
+  default_model: small
+
+  # Доступные модели
+  models:
+    - tiny      # 75 MB, очень быстрая, низкая точность
+    - base      # 145 MB, быстрая, средняя точность
+    - small     # 488 MB, средняя скорость, хорошая точность
+    - medium    # 1.5 GB, медленная, очень хорошая точность
+    - large     # 3.1 GB, очень медленная, отличная точность
+    - large-v2  # 3.1 GB, улучшенная версия
+    - large-v3  # 3.1 GB, последняя версия, лучшая точность
+
+  # Язык по умолчанию (ISO 639-1: ru, en, es, etc.)
+  default_language: ru
+
+  # Устройство для вычислений (cpu/cuda/mps/auto)
+  # auto - автоопределение (CUDA > MPS > CPU)
+  device: auto
+
+  # Тип вычислений (int8/float16/float32)
+  # int8 - быстрее, меньше памяти
+  # float16 - баланс
+  # float32 - максимальная точность
+  compute_type: int8
+
+  # Использовать VAD фильтр (Voice Activity Detection)
+  vad_filter: true
+
+  # Включить таймкоды для слов (медленнее)
+  word_timestamps: false
+
+  # Директория для кеша моделей
+  download_root: null  # null = default (~/.cache/huggingface)
+
+service:
+  # Хост для прослушивания
+  host: 0.0.0.0
+
+  # Порт
+  port: 8000
+
+  # Количество workers (для production)
+  workers: 1
+
+  # Директория для загружаемых файлов
+  upload_dir: ./uploads
+
+  # Директория для результатов
+  results_dir: ./results
+
+  # Максимальный размер загружаемого файла (MB)
+  max_upload_size_mb: 500
+
+  # Таймаут для транскрипции (секунды, 0 = без лимита)
+  transcription_timeout: 0
+
+  # CORS настройки
+  cors:
+    allow_origins:
+      - "*"
+    allow_methods:
+      - "*"
+    allow_headers:
+      - "*"
+
+database:
+  # Путь к SQLite базе данных
+  path: ./transcription_service.db
+
+  # Автоочистка старых задач (дней, 0 = отключено)
+  auto_cleanup_days: 30
+
+integration:
+  # Автоопределение audio_chunks_* директорий
+  auto_detect_chunks: true
+
+  # Паттерн для поиска chunks директорий
+  chunks_pattern: "audio_chunks_*"
+
+  # Поддержка manifest.json из run.py
+  manifest_support: true
+
+  # Базовая директория для поиска chunks
+  chunks_base_path: "./"
+
+logging:
+  # Уровень логирования (DEBUG/INFO/WARNING/ERROR)
+  level: INFO
+
+  # Файл для логов
+  file: whisper_service.log
+
+  # Формат логов
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+  # Ротация логов
+  rotation:
+    max_size_mb: 100
+    backup_count: 5

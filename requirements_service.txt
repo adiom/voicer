@@ -1,0 +1,23 @@
+# Whisper Transcription Service - Dependencies
+
+# FastAPI и сервер
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+
+# Pydantic для валидации
+pydantic
+pydantic-settings
+
+# Whisper транскрипция
+faster-whisper
+
+# Работа с файлами
+aiofiles
+
+# Конфигурация
+PyYAML
+
+# Прогресс
+tqdm
