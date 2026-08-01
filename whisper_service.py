@@ -10,10 +10,14 @@ from typing import Optional, List
 from contextlib import asynccontextmanager
 
 import yaml
-from fastapi import FastAPI, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from dotenv import load_dotenv
+from fastapi import FastAPI, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Depends, Security
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uvicorn
+
+load_dotenv()
 
 from models import (
     TranscriptionRequest, BatchRequest, AutoProcessRequest, JobCreateResponse,
@@ -110,11 +114,21 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"https?://(.*\.vercel\.app|.*\.canfly\.org|localhost:\d+)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# API Key authentication
+security = HTTPBearer()
+
+async def verify_api_key(
+    credentials: HTTPAuthorizationCredentials = Security(security)
+):
+    api_key = os.environ.get("API_KEY")
+    if api_key and credentials.credentials != api_key:
+        raise HTTPException(status_code=403, detail="Invalid API key")
 
 
 # ============================================================================
@@ -134,7 +148,7 @@ async def health_check():
     )
 
 
-@app.get("/models", response_model=List[ModelInfo])
+@app.get("/models", response_model=List[ModelInfo], dependencies=[Depends(verify_api_key)])
 async def list_models():
     """Получить список доступных моделей Whisper"""
     model_info = TranscriptionEngine.get_model_info()
@@ -156,7 +170,7 @@ async def list_models():
 # SINGLE FILE TRANSCRIPTION
 # ============================================================================
 
-@app.post("/transcribe", response_model=JobCreateResponse)
+@app.post("/transcribe", response_model=JobCreateResponse, dependencies=[Depends(verify_api_key)])
 async def transcribe_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -196,7 +210,7 @@ async def transcribe_upload(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/transcribe/file", response_model=JobCreateResponse)
+@app.post("/transcribe/file", response_model=JobCreateResponse, dependencies=[Depends(verify_api_key)])
 async def transcribe_file(request: TranscriptionRequest, background_tasks: BackgroundTasks):
     """
     Транскрибирование существующего файла по пути
@@ -234,7 +248,7 @@ async def transcribe_file(request: TranscriptionRequest, background_tasks: Backg
 # BATCH PROCESSING
 # ============================================================================
 
-@app.post("/transcribe/batch", response_model=JobCreateResponse)
+@app.post("/transcribe/batch", response_model=JobCreateResponse, dependencies=[Depends(verify_api_key)])
 async def transcribe_batch(request: BatchRequest, background_tasks: BackgroundTasks):
     """
     Batch обработка директории с аудио файлами
@@ -274,7 +288,7 @@ async def transcribe_batch(request: BatchRequest, background_tasks: BackgroundTa
     )
 
 
-@app.post("/transcribe/auto", response_model=JobCreateResponse)
+@app.post("/transcribe/auto", response_model=JobCreateResponse, dependencies=[Depends(verify_api_key)])
 async def transcribe_auto(request: AutoProcessRequest, background_tasks: BackgroundTasks):
     """
     Автоматическая обработка chunks директорий из run.py
@@ -315,7 +329,7 @@ async def transcribe_auto(request: AutoProcessRequest, background_tasks: Backgro
 # JOB MANAGEMENT
 # ============================================================================
 
-@app.get("/jobs", response_model=JobListResponse)
+@app.get("/jobs", response_model=JobListResponse, dependencies=[Depends(verify_api_key)])
 async def list_jobs(
     status: Optional[JobStatus] = None,
     limit: int = 50,
@@ -335,7 +349,7 @@ async def list_jobs(
     )
 
 
-@app.get("/jobs/{job_id}", response_model=JobInfo)
+@app.get("/jobs/{job_id}", response_model=JobInfo, dependencies=[Depends(verify_api_key)])
 async def get_job_status(job_id: str):
     """
     Получить статус конкретной задачи
@@ -347,7 +361,7 @@ async def get_job_status(job_id: str):
     return job
 
 
-@app.get("/jobs/{job_id}/result")
+@app.get("/jobs/{job_id}/result", dependencies=[Depends(verify_api_key)])
 async def get_job_result(job_id: str):
     """
     Получить результат транскрипции
@@ -365,7 +379,7 @@ async def get_job_result(job_id: str):
     return job.result
 
 
-@app.delete("/jobs/{job_id}")
+@app.delete("/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
 async def delete_job(job_id: str):
     """
     Удалить задачу
@@ -381,7 +395,7 @@ async def delete_job(job_id: str):
 # EXPORT ENDPOINTS
 # ============================================================================
 
-@app.get("/jobs/{job_id}/export/{format}")
+@app.get("/jobs/{job_id}/export/{format}", dependencies=[Depends(verify_api_key)])
 async def export_result(job_id: str, format: ExportFormat):
     """
     Экспорт результата в различные форматы (SRT, VTT, JSON, TXT)
