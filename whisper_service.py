@@ -138,14 +138,24 @@ async def verify_api_key(
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
-    stats = db.get_statistics()
-    return HealthResponse(
-        status="healthy",
-        version="1.0.0",
-        models_loaded=[engine.model_name],
-        active_jobs=stats["active_jobs"],
-        total_jobs=stats["total_jobs"]
-    )
+    try:
+        stats = db.get_statistics()
+        return HealthResponse(
+            status="healthy",
+            version="1.0.0",
+            models_loaded=[engine.model_name],
+            active_jobs=stats["active_jobs"],
+            total_jobs=stats["total_jobs"]
+        )
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return HealthResponse(
+            status="degraded",
+            version="1.0.0",
+            models_loaded=[engine.model_name] if engine else [],
+            active_jobs=0,
+            total_jobs=0
+        )
 
 
 @app.get("/models", response_model=List[ModelInfo], dependencies=[Depends(verify_api_key)])
@@ -186,8 +196,18 @@ async def transcribe_upload(
     file_path = upload_dir / f"{job_id}_{file.filename}"
 
     try:
+        content = await file.read()
+
+        # Валидация размера файла
+        max_size_mb = config["service"].get("max_upload_size_mb", 500)
+        max_size_bytes = max_size_mb * 1024 * 1024
+        if len(content) > max_size_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Max size: {max_size_mb}MB"
+            )
+
         with open(file_path, "wb") as f:
-            content = await file.read()
             f.write(content)
 
         logger.info(f"File uploaded: {file_path}")
@@ -536,9 +556,27 @@ def process_transcription(
         db.update_job_status(job_id, JobStatus.COMPLETED)
         logger.info(f"Job {job_id} completed successfully")
 
+        # Уведомить WebSocket клиентов
+        try:
+            asyncio.run(notify_websockets(job_id))
+        except Exception as e:
+            logger.warning(f"Failed to notify WebSocket clients: {e}")
+
+        # Удалить загруженный файл
+        try:
+            Path(file_path).unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"Failed to delete file {file_path}: {e}")
+
     except Exception as e:
         logger.error(f"Job {job_id} failed: {e}")
         db.update_job_status(job_id, JobStatus.FAILED, str(e))
+
+        # Уведомить WebSocket клиентов об ошибке
+        try:
+            asyncio.run(notify_websockets(job_id))
+        except Exception as e:
+            logger.warning(f"Failed to notify WebSocket clients: {e}")
 
 
 def process_batch_transcription(
