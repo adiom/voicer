@@ -26,7 +26,7 @@ ENV WHISPER_DEVICE=cpu
 ENV WHISPER_COMPUTE_TYPE=int8
 ENV DB_PATH=/tmp/transcription_service.db
 
-EXPOSE 8000
+EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:$PORT/health || exit 1
