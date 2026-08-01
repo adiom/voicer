@@ -628,10 +628,11 @@ def process_auto_chunks(
 
 if __name__ == "__main__":
     config = load_config()
+    port = int(os.environ.get("PORT", config["service"]["port"]))
     uvicorn.run(
         "whisper_service:app",
         host=config["service"]["host"],
-        port=config["service"]["port"],
+        port=port,
         reload=False,
         log_level="info"
     )

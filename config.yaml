@@ -2,7 +2,7 @@
 
 whisper:
   # Модель по умолчанию (tiny/base/small/medium/large/large-v2/large-v3)
-  default_model: large-v3
+  default_model: tiny
 
   # Доступные модели
   models:
