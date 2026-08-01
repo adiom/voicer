@@ -8,10 +8,11 @@ import asyncio
 from pathlib import Path
 from typing import Optional, List
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 
 import yaml
 from dotenv import load_dotenv
-from fastapi import FastAPI, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Depends, Security
+from fastapi import FastAPI, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Depends, Security, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -27,16 +28,27 @@ from models import (
 from database import Database
 from transcriber import TranscriptionEngine
 
+# Request ID для логов
+request_id_var: ContextVar[Optional[str]] = ContextVar('request_id', default=None)
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] %(message)s',
     handlers=[
         logging.FileHandler('whisper_service.log'),
         logging.StreamHandler()
     ]
 )
+
+class RequestIdFilter(logging.Filter):
+    def filter(self, record):
+        record.request_id = request_id_var.get() or '-'
+        return True
+
 logger = logging.getLogger(__name__)
+for handler in logging.getLogger().handlers:
+    handler.addFilter(RequestIdFilter())
 
 # Глобальные объекты
 db: Optional[Database] = None
@@ -88,6 +100,13 @@ async def lifespan(app: FastAPI):
     # Инициализация БД
     db = Database(config["database"]["path"])
 
+    # Cleanup старых задач
+    cleanup_days = config["database"].get("auto_cleanup_days", 30)
+    if cleanup_days > 0:
+        deleted = db.cleanup_old_jobs(cleanup_days)
+        if deleted > 0:
+            logger.info(f"Cleaned up {deleted} old jobs (>{cleanup_days} days)")
+
     # Инициализация транскрипции engine
     engine = TranscriptionEngine(
         model_name=config["whisper"]["default_model"],
@@ -119,6 +138,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Request ID middleware
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    token = request_id_var.set(req_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
+    finally:
+        request_id_var.reset(token)
 
 # API Key authentication
 security = HTTPBearer()
@@ -455,7 +486,8 @@ async def export_result(job_id: str, format: ExportFormat):
 @app.websocket("/ws/{job_id}")
 async def websocket_endpoint(websocket: WebSocket, job_id: str):
     """
-    WebSocket для real-time обновлений прогресса
+    WebSocket для real-time обновлений прогресса.
+    Закрывается через 5 минут без обновлений или при завершении задачи.
     """
     await websocket.accept()
 
@@ -464,11 +496,26 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
         active_websockets[job_id] = []
     active_websockets[job_id].append(websocket)
 
+    timeout_seconds = 300  # 5 минут
+    loop = asyncio.get_running_loop()
+    last_update = loop.time()
+    last_state = None
+
     try:
         while True:
             # Отправлять обновления статуса
             job = db.get_job(job_id)
             if job:
+                current_state = (
+                    job.status,
+                    job.progress.current,
+                    job.progress.total,
+                    job.updated_at,
+                )
+                if current_state != last_state:
+                    last_update = loop.time()
+                    last_state = current_state
+
                 await websocket.send_json({
                     "job_id": job_id,
                     "status": job.status.value,
@@ -479,6 +526,12 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
                 # Если задача завершена, закрыть соединение
                 if job.status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]:
                     break
+
+            # Проверка timeout
+            elapsed = loop.time() - last_update
+            if elapsed > timeout_seconds:
+                logger.info(f"WebSocket timeout for job {job_id} ({timeout_seconds}s)")
+                break
 
             await asyncio.sleep(1)  # Обновлять каждую секунду
 

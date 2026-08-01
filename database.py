@@ -432,3 +432,45 @@ class Database:
                 "active_jobs": status_counts.get(JobStatus.PROCESSING.value, 0) +
                               status_counts.get(JobStatus.PENDING.value, 0)
             }
+
+    def cleanup_old_jobs(self, days: int = 30) -> int:
+        """
+        Удалить старые завершённые/упавшие задачи
+
+        Args:
+            days: Удалять задачи старше N дней
+
+        Returns:
+            Количество удалённых задач
+        """
+        if days <= 0:
+            return 0
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Найти старые задачи
+            cursor.execute("""
+                SELECT id FROM jobs
+                WHERE status IN (?, ?, ?)
+                AND datetime(completed_at) < datetime('now', ?)
+            """, (
+                JobStatus.COMPLETED.value,
+                JobStatus.FAILED.value,
+                JobStatus.CANCELLED.value,
+                f'-{days} days'
+            ))
+            old_job_ids = [row['id'] for row in cursor.fetchall()]
+
+            if not old_job_ids:
+                return 0
+
+            # Удалить связанные транскрипции
+            placeholders = ','.join(['?'] * len(old_job_ids))
+            cursor.execute(f"DELETE FROM transcriptions WHERE job_id IN ({placeholders})", old_job_ids)
+            cursor.execute(f"DELETE FROM errors WHERE job_id IN ({placeholders})", old_job_ids)
+            cursor.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", old_job_ids)
+
+            deleted = len(old_job_ids)
+            logger.info(f"Cleaned up {deleted} old jobs (>{days} days)")
+            return deleted
