@@ -193,13 +193,15 @@ async def add_request_id(request: Request, call_next):
         request_id_var.reset(token)
 
 # API Key authentication
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 async def verify_api_key(
-    credentials: HTTPAuthorizationCredentials = Security(security)
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security)
 ):
     api_key = os.environ.get("API_KEY")
-    if api_key and credentials.credentials != api_key:
+    if not api_key:
+        return  # API_KEY не настроен — аутентификация не требуется
+    if not credentials or credentials.credentials != api_key:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
