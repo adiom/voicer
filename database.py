@@ -4,11 +4,12 @@ SQLite database management для Whisper Transcription Service
 import sqlite3
 import json
 import logging
+import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 
-from models import JobStatus, JobInfo, TranscriptionResult, JobProgress
+from models import JobStatus, JobInfo, TranscriptionResult, JobProgress, WebhookInfo
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,17 @@ class Database:
                     error_details TEXT,
                     timestamp TEXT NOT NULL,
                     FOREIGN KEY (job_id) REFERENCES jobs (id) ON DELETE CASCADE
+                )
+            """)
+
+            # Таблица вебхуков
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS webhooks (
+                    id TEXT PRIMARY KEY,
+                    url TEXT NOT NULL,
+                    event_type TEXT NOT NULL DEFAULT 'job_completed',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
                 )
             """)
 
@@ -391,6 +403,79 @@ class Database:
 
         if deleted:
             logger.info(f"Deleted job {job_id}")
+        return deleted
+
+    # ========================================================================
+    # WEBHOOKS
+    # ========================================================================
+
+    def create_webhook(self, url: str, event_type: str = "job_completed") -> str:
+        """
+        Создать новый вебхук.
+
+        Args:
+            url: URL для POST-уведомлений
+            event_type: Тип события (на данный момент: job_completed)
+
+        Returns:
+            ID созданного вебхука
+        """
+        webhook_id = str(uuid.uuid4())
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO webhooks (id, url, event_type, active, created_at)
+                VALUES (?, ?, ?, 1, ?)
+            """, (webhook_id, url, event_type, datetime.now().isoformat()))
+
+        logger.info(f"Created webhook {webhook_id}: {url}")
+        return webhook_id
+
+    def list_webhooks(self, active: Optional[bool] = None) -> List[WebhookInfo]:
+        """
+        Получить список вебхуков.
+
+        Args:
+            active: None = все, True = только активные, False = только выключенные
+
+        Returns:
+            Список WebhookInfo
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if active is None:
+                rows = cursor.execute("SELECT * FROM webhooks ORDER BY created_at").fetchall()
+            else:
+                rows = cursor.execute(
+                    "SELECT * FROM webhooks WHERE active = ? ORDER BY created_at",
+                    (1 if active else 0,)
+                ).fetchall()
+
+        return [WebhookInfo(
+            id=row["id"],
+            url=row["url"],
+            event_type=row["event_type"],
+            active=bool(row["active"]),
+            created_at=datetime.fromisoformat(row["created_at"])
+        ) for row in rows]
+
+    def delete_webhook(self, webhook_id: str) -> bool:
+        """
+        Удалить вебхук.
+
+        Args:
+            webhook_id: ID вебхука
+
+        Returns:
+            True если удалён
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM webhooks WHERE id = ?", (webhook_id,))
+            deleted = cursor.rowcount > 0
+
+        if deleted:
+            logger.info(f"Deleted webhook {webhook_id}")
         return deleted
 
     def mark_stale_processing(self, days: int = 7) -> int:

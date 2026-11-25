@@ -109,6 +109,43 @@ def test_export_txt(client, tmp_path):
     assert "тестовая транскрипция" in r.content.decode("utf-8")
 
 
+def test_webhooks_endpoints(client):
+    r = client.post("/webhooks", json={"url": "https://example.com/hook"})
+    assert r.status_code == 201
+    webhook_id = r.json()["id"]
+
+    r = client.get("/webhooks")
+    assert r.status_code == 200
+    urls = [w["url"] for w in r.json()]
+    assert "https://example.com/hook" in urls
+
+    r = client.delete(f"/webhooks/{webhook_id}")
+    assert r.status_code == 200
+    assert all(w["id"] != webhook_id for w in client.get("/webhooks").json())
+
+    r = client.delete(f"/webhooks/{webhook_id}")
+    assert r.status_code == 404
+
+
+def test_transcribe_upload_params(client):
+    r = client.post(
+        "/transcribe",
+        files={"file": ("audio.wav", b"fake audio", "audio/wav")},
+        data={"language": "ru", "model": "small", "word_timestamps": "true"},
+    )
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    assert wait_completed(client, job_id)["status"] == "completed"
+
+
+def test_transcribe_upload_rejects_bad_filename(client):
+    r = client.post(
+        "/transcribe",
+        files={"file": ("../../etc/passwd", b"fake", "application/octet-stream")},
+    )
+    assert r.status_code == 400
+
+
 def test_jobs_list_and_delete(client, tmp_path):
     audio = tmp_path / "in.wav"
     audio.write_bytes(b"fake audio")

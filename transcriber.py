@@ -92,6 +92,22 @@ class TranscriptionEngine:
             logger.error(f"Failed to load model: {e}")
             raise
 
+    def load_model(self, model_name: str, device: Optional[str] = None, compute_type: Optional[str] = None):
+        """
+        Перезагрузить модель (например, переключение на конкретную для задачи)
+
+        Args:
+            model_name: Новое имя модели Whisper
+            device: Опциональное устройство (cpu/cuda/mps/auto) — если не задано, текущее
+            compute_type: Опциональный тип вычислений (int8/float16/float32)
+        """
+        self.model_name = model_name
+        if device is not None:
+            self.device = self._detect_device(device)
+        if compute_type is not None:
+            self.compute_type = compute_type
+        self._load_model()
+
     def transcribe_file(
         self,
         audio_path: str,

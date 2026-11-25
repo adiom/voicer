@@ -1,3 +1,5 @@
+exclude = [".agents"]  # внешние пакеты скиллов (npx skills)
+
 [lint]
 select = ["F", "E4", "E7"]
 ignore = ["E402"]  # whisper_service: load_dotenv() перед импортами проекта

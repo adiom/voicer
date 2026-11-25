@@ -74,6 +74,22 @@ def test_cleanup_old_jobs(db):
     assert db.cleanup_old_jobs(30) == 1
 
 
+def test_webhooks_crud(db):
+    webhook_id = db.create_webhook("https://example.com/hook", "job_completed")
+    hooks = db.list_webhooks(active=None)
+    assert len(hooks) == 1
+    assert hooks[0].url == "https://example.com/hook"
+    assert hooks[0].event_type == "job_completed"
+    assert hooks[0].active is True
+
+    active = db.list_webhooks(active=True)
+    assert any(h.id == webhook_id for h in active)
+
+    assert db.delete_webhook(webhook_id)
+    assert db.list_webhooks(active=None) == []
+    assert not db.delete_webhook(webhook_id)
+
+
 def test_mark_stale_processing(db):
     db.create_job("old", language="ru", model="small")
     db.create_job("fresh", language="ru", model="small")

@@ -3,9 +3,11 @@ FastAPI service для транскрипции аудио с faster-whisper
 """
 import os
 import uuid
+import json
 import logging
 import asyncio
 import threading
+import urllib.request
 from pathlib import Path
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -25,7 +27,7 @@ load_dotenv()
 from models import (
     TranscriptionRequest, BatchRequest, AutoProcessRequest, JobCreateResponse,
     JobInfo, JobListResponse, HealthResponse, ModelInfo, ExportFormat,
-    JobStatus
+    JobStatus, WebhookCreateRequest
 )
 from database import Database
 from transcriber import TranscriptionEngine
@@ -58,6 +60,12 @@ engine: Optional[TranscriptionEngine] = None
 config: dict = {}
 active_websockets: dict = {}  # job_id -> list of websockets
 engine_lock = threading.Lock()  # engine.transcribe_file не гарантирует thread-safety
+
+# Разрешённые расширения загружаемых файлов
+AUDIO_EXTENSIONS = {
+    ".wav", ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".webm", ".mp4",
+    ".aac", ".aiff", ".amr", ".alac"
+}
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -249,49 +257,74 @@ async def transcribe_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     language: Optional[str] = "ru",
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    word_timestamps: bool = False,
+    vad_filter: bool = True,
+    initial_prompt: Optional[str] = None
 ):
     """
     Upload и транскрибирование аудио файла
     """
+    language = language or "ru"
+
+    # Валидация имени и расширения загруженного файла (защита от путей)
+    safe_name = Path(file.filename or "audio").name
+    extension = Path(safe_name).suffix.lower()
+    if not extension or extension not in AUDIO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file extension: {Path(safe_name).suffix or '(none)'}. "
+                   f"Allowed: {sorted(AUDIO_EXTENSIONS)}"
+        )
+
+    # Предварительная проверка размера до чтения в память
+    max_size_mb = config["service"].get("max_upload_size_mb", 500)
+    max_size_bytes = max_size_mb * 1024 * 1024
+    declared_size = getattr(file, "size", None)
+    if declared_size is not None and declared_size > max_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Max size: {max_size_mb}MB"
+        )
+
     # Сохранить загруженный файл
     job_id = str(uuid.uuid4())
     upload_dir = Path(config["service"]["upload_dir"])
-    file_path = upload_dir / f"{job_id}_{file.filename}"
+    file_path = upload_dir / f"{job_id}_{safe_name}"
 
-    try:
-        content = await file.read()
-
-        # Валидация размера файла
-        max_size_mb = config["service"].get("max_upload_size_mb", 500)
-        max_size_bytes = max_size_mb * 1024 * 1024
-        if len(content) > max_size_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File too large. Max size: {max_size_mb}MB"
-            )
-
-        with open(file_path, "wb") as f:
-            f.write(content)
-
-        logger.info(f"File uploaded: {file_path}")
-
-        # Создать задачу
-        model_name = model or config["whisper"]["default_model"]
-        db.create_job(job_id, str(file_path), language=language, model=model_name)
-
-        # Запустить транскрипцию в фоне
-        background_tasks.add_task(process_transcription, job_id, str(file_path), language, model_name)
-
-        return JobCreateResponse(
-            job_id=job_id,
-            status=JobStatus.PENDING,
-            message="Transcription job created successfully"
+    content = await file.read()
+    if len(content) > max_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Max size: {max_size_mb}MB"
         )
 
-    except Exception as e:
-        logger.error(f"Failed to create transcription job: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    logger.info(f"File uploaded: {file_path}")
+
+    # Создать задачу
+    model_name = model or config["whisper"]["default_model"]
+    db.create_job(job_id, str(file_path), language=language, model=model_name)
+
+    # Запустить транскрипцию в фоне
+    background_tasks.add_task(
+        process_transcription,
+        job_id,
+        str(file_path),
+        language,
+        model_name,
+        word_timestamps,
+        vad_filter,
+        initial_prompt
+    )
+
+    return JobCreateResponse(
+        job_id=job_id,
+        status=JobStatus.PENDING,
+        message="Transcription job created successfully"
+    )
 
 
 @app.post("/transcribe/file", response_model=JobCreateResponse, dependencies=[Depends(verify_api_key)])
@@ -476,6 +509,29 @@ async def delete_job(job_id: str):
 
 
 # ============================================================================
+# WEBHOOKS
+# ============================================================================
+
+@app.post("/webhooks", status_code=201, response_model=dict, dependencies=[Depends(verify_api_key)])
+async def create_webhook(payload: WebhookCreateRequest):
+    webhook_id = db.create_webhook(payload.url, payload.event_type)
+    return {"id": webhook_id, "status": "active"}
+
+
+@app.get("/webhooks", response_model=List[dict], dependencies=[Depends(verify_api_key)])
+async def list_webhooks():
+    return [w.model_dump() for w in db.list_webhooks(active=None)]
+
+
+@app.delete("/webhooks/{webhook_id}", dependencies=[Depends(verify_api_key)])
+async def delete_webhook(webhook_id: str):
+    success = db.delete_webhook(webhook_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    return {"message": "Webhook deleted"}
+
+
+# ============================================================================
 # EXPORT ENDPOINTS
 # ============================================================================
 
@@ -603,6 +659,35 @@ async def notify_websockets(job_id: str):
                 logger.error(f"Failed to send WebSocket message: {e}")
 
 
+def notify_webhooks(job_id: str):
+    """Отправить вебхуки на завершение задачи (в фоновом потоке, best-effort)"""
+    webhooks = db.list_webhooks(active=True)
+    if not webhooks:
+        return
+
+    payload = json.dumps({
+        "event": "job_completed",
+        "job_id": job_id
+    }).encode("utf-8")
+
+    def deliver():
+        for wb in webhooks:
+            try:
+                request = urllib.request.Request(
+                    wb.url,
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    response.read()
+                logger.info(f"Webhook delivered to {wb.url} (job {job_id})")
+            except Exception as e:
+                logger.warning(f"Webhook delivery failed to {wb.url}: {e}")
+
+    threading.Thread(target=deliver, daemon=True).start()
+
+
 def process_transcription(
     job_id: str,
     file_path: str,
@@ -624,8 +709,11 @@ def process_transcription(
                 current_file=Path(file_path).name
             )
 
-        # Сериализуем транскрипции (engine вызывается из потоков)
+        # Сериализуем транскрипции и переключаем модель при необходимости
         with engine_lock:
+            if model and engine.model_name != model:
+                logger.info(f"Switching model: {engine.model_name} -> {model}")
+                engine.load_model(model)
             result = engine.transcribe_file(
                 file_path,
                 language=language,
@@ -647,6 +735,9 @@ def process_transcription(
 
         db.update_job_status(job_id, JobStatus.COMPLETED)
         logger.info(f"Job {job_id} completed successfully")
+
+        # Отправить вебхуки на завершение (для AI-пайплайнов)
+        notify_webhooks(job_id)
 
         # Уведомить WebSocket клиентов
         try:

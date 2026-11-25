@@ -154,3 +154,18 @@ class ErrorResponse(BaseModel):
     error: str = Field(..., description="Тип ошибки")
     message: str = Field(..., description="Сообщение об ошибке")
     details: Optional[Dict[str, Any]] = Field(None, description="Дополнительные детали")
+
+
+class WebhookInfo(BaseModel):
+    """Информация о вебхуке"""
+    id: str = Field(..., description="ID вебхука")
+    url: str = Field(..., description="URL для POST-уведомлений")
+    event_type: str = Field(..., description="Тип события")
+    active: bool = Field(True, description="Активен ли вебхук")
+    created_at: datetime = Field(default_factory=datetime.now, description="Время создания")
+
+
+class WebhookCreateRequest(BaseModel):
+    """Запрос на создание вебхука"""
+    url: str = Field(..., description="URL для POST-уведомлений")
+    event_type: str = Field("job_completed", description="Тип события")
