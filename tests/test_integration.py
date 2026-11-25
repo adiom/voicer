@@ -129,6 +129,8 @@ def test_transcription_via_docker():
             files={"file": ("test.wav", wav, "audio/wav")},
             headers=headers,
         )
+        if r.status_code in (401, 403):
+            pytest.skip("Prod requires auth (keys exist). Set VOICER_API_KEY to run, or revoke keys.")
         assert r.status_code < 500
         job_id = r.json()["job_id"]
 

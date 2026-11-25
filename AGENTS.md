@@ -8,7 +8,9 @@
 - Запуск: `python3 whisper_service.py` (или `uvicorn whisper_service:app`). Читает `PORT` (Railway его задаёт; Dockerfile выставляет `ENV PORT=8080`).
 - Конфиг: `config.yaml` (default_model `tiny` — по умолчанию под free-план Railway; `service.port: 8080`).
 - Лог-файл `whisper_service.log` пишется в cwd — gitignored, не коммитить.
-- `API_KEY` (из `.env`) — без него большинство эндпоинтов доступны, почти все под `Depends(verify_api_key)`.
+- **Авторизация (per-client):** `POST /keys` создаёт API-ключ (`vk_...` — секрет возвращается один раз), `GET /keys` и `DELETE /keys/{id}` управляют ими. Если ключей нет и `API_KEY` не задан — доступ открыт; после создания первого ключа авторизация требуется для всех защищённых эндпоинтов (`get_current_client`). Глобальный `API_KEY` — легаси, возвращает клиента `admin`.
+- На задачи при создании записывается `client_name` (имя авторизованного клиента) — в `GET /jobs/{id}` и `GET /jobs`.
+- `instance_id` — в `/health` (из `VOICER_INSTANCE_ID` или автогенерация), для различения инстансов при децентрализации.
 
 ## Тесты
 
