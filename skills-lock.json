@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "skills": {
+    "fastapi-expert": {
+      "source": "Jeffallan/claude-skills",
+      "commit": "d98d06edb54c25cfb94017c0ef830342a34a43ba",
+      "sourceType": "github",
+      "skillPath": "plugin/skills/fastapi-expert/SKILL.md",
+      "computedHash": "ea1cddac3ac0f363c23d8cb19eefaab407609160ab3e0443eb772de921298b91"
+    },
+    "fastapi-templates": {
+      "source": "wshobson/agents",
+      "commit": "c96b5f6552dba32e4492307493ee613581430715",
+      "sourceType": "github",
+      "skillPath": "plugins/api-scaffolding/skills/fastapi-templates/SKILL.md",
+      "computedHash": "ff45d61c054d67cf62da1b1ce0107ac8185cf5061e80bbf38ac6156f4a5d0542"
+    },
+    "use-railway": {
+      "source": "railwayapp/railway-skills",
+      "commit": "29b37e471cfd9530de411d79b3b2d1e28d955d05",
+      "sourceType": "github",
+      "skillPath": "plugins/railway/skills/use-railway/SKILL.md",
+      "computedHash": "603d0467286edc8c792c1a65b9c7ddaa215c67246802d04fb37dbac58b368a7a"
+    }
+  }
+}
