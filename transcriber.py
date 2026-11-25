@@ -18,8 +18,8 @@ class TranscriptionEngine:
     # Информация о моделях
     MODEL_INFO = {
         "tiny": {"size_mb": 75, "speed": "очень быстрая", "accuracy": "низкая"},
-        "base": {"size_mb": 145, "speed": "быстрая", "accuracy": "средняя"},
-        "small": {"size_mb": 488, "speed": "средняя", "accuracy": "хорошая"},
+        "base": {"size_mb": 142, "speed": "быстрая", "accuracy": "средняя"},
+        "small": {"size_mb": 466, "speed": "средняя", "accuracy": "хорошая"},
         "medium": {"size_mb": 1500, "speed": "медленная", "accuracy": "очень хорошая"},
         "large": {"size_mb": 3100, "speed": "очень медленная", "accuracy": "отличная"},
         "large-v2": {"size_mb": 3100, "speed": "очень медленная", "accuracy": "отличная"},
@@ -28,7 +28,7 @@ class TranscriptionEngine:
 
     def __init__(
         self,
-        model_name: str = "small",
+        model_name: str = "tiny",
         device: str = "auto",
         compute_type: str = "int8",
         download_root: Optional[str] = None
