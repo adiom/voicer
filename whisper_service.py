@@ -14,9 +14,10 @@ from contextvars import ContextVar
 import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Depends, Security, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from prometheus_fastapi_instrumentator import Instrumentator
 import uvicorn
 
 load_dotenv()
@@ -24,7 +25,7 @@ load_dotenv()
 from models import (
     TranscriptionRequest, BatchRequest, AutoProcessRequest, JobCreateResponse,
     JobInfo, JobListResponse, HealthResponse, ModelInfo, ExportFormat,
-    JobStatus, ErrorResponse
+    JobStatus
 )
 from database import Database
 from transcriber import TranscriptionEngine
@@ -94,6 +95,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Whisper Transcription Service...")
 
     config = load_config()
+    init_tracing()
 
     # Создаем директории
     os.makedirs(config["service"]["upload_dir"], exist_ok=True)
@@ -136,6 +138,30 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Метрики (endpoint /metrics)
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
+
+
+def init_tracing():
+    """Настройка OpenTelemetry: если сконфигурирован OTEL_EXPORTER_OTLP_ENDPOINT"""
+    otlp_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not otlp_endpoint:
+        return
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        provider = TracerProvider()
+        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+        trace.set_tracer_provider(provider)
+        FastAPIInstrumentor.instrument_app(app)
+        logger.info(f"OpenTelemetry tracing enabled: {otlp_endpoint}")
+    except Exception as e:
+        logger.warning(f"Failed to enable OpenTelemetry tracing: {e}")
 
 # CORS middleware
 app.add_middleware(

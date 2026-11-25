@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 import json
 
-from models import TranscriptionResult, TranscriptionSegment, WhisperModel as WModel
+from models import TranscriptionResult, TranscriptionSegment
 
 logger = logging.getLogger(__name__)
 

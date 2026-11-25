@@ -1,6 +1,5 @@
 import sqlite3
 
-from database import Database
 from models import JobStatus
 
 

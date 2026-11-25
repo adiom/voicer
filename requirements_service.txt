@@ -21,6 +21,12 @@ httpx
 pytest
 pytest-cov
 
+# Метрики и трассировка
+prometheus-fastapi-instrumentator
+opentelemetry-instrumentation-fastapi
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
+
 # Конфигурация
 PyYAML
 python-dotenv

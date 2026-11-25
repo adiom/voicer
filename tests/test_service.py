@@ -74,6 +74,12 @@ def test_models(client):
     assert any(m["name"] == "small" for m in r.json())
 
 
+def test_metrics(client):
+    r = client.get("/metrics")
+    assert r.status_code == 200
+    assert b"http_requests_total" in r.content
+
+
 def test_transcribe_file_job_lifecycle(client, tmp_path):
     audio = tmp_path / "in.wav"
     audio.write_bytes(b"fake audio")

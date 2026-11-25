@@ -6,7 +6,6 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from pathlib import Path
 from contextlib import contextmanager
 
 from models import JobStatus, JobInfo, TranscriptionResult, JobProgress
@@ -415,7 +414,7 @@ class Database:
             """, (JobStatus.FAILED.value, now, JobStatus.PROCESSING.value, f'-{days} days'))
             return cursor.rowcount
 
-        logger.info(f"Marked stale processing jobs as failed")
+        logger.info("Marked stale processing jobs as failed")
 
     def get_statistics(self) -> Dict[str, Any]:
         """
