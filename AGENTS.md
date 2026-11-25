@@ -41,6 +41,14 @@
 - Домен: `https://voicer-production-769f94d8.up.railway.app` (теперь в `railway status --json` как `source.repo`)
 - Репо проекта: `adiom/voicer` (основной); CI в `Canfly/voicer-ci`.
 
+## Децентрализация: множество инстансов
+
+- Инстансы полностью независимы: своя БД (`transcription_service.db`), свои `uploads/`, `results/`, свои `whisper_service.log`.
+- **Порты:** у каждого инстанса свой — `PORT` (Railway) / `--port` / compose-маппинги (service читает `PORT`, `config.yaml` `service.port: 8080`).
+- **Изоляция моделей:** модель для HF-кэша по умолчанию общая (`~/.cache/huggingface`) — задайте разные `HF_HOME`/`TRANSFORMERS_CACHE` per instance для полной изоляции.
+- **Как запустить второй инстанс локально:** `cd <dir2> && PORT=8082 python3 whisper_service.py` (свой cwd → свой DB/uploads/results). Верификация: `GET /health` на обоих должны показывать разные `instance_id`, а задача на А не видна в `GET /jobs` на Б.
+- `instance_id` (в `/health`) — идентификатор инстанса, сет из env `VOICER_INSTANCE_ID` или автогенерация.
+
 ## Подводные камни (gotchas)
 
 - Сервис читает `PORT`, а `docker-compose` ставит `SERVICE_PORT=8000` + мапит порт 8000 — реально сервис работает на 8080, компоновку пришлось починить переменным `PORT=8000`.
