@@ -3,13 +3,15 @@ SQLite database management для Whisper Transcription Service
 """
 import sqlite3
 import json
+import hashlib
 import logging
+import secrets
 import uuid
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from contextlib import contextmanager
 
-from models import JobStatus, JobInfo, TranscriptionResult, JobProgress, WebhookInfo
+from models import JobStatus, JobInfo, TranscriptionResult, JobProgress, WebhookInfo, KeyInfo
 
 logger = logging.getLogger(__name__)
 
@@ -108,10 +110,34 @@ class Database:
                 )
             """)
 
+            # Таблица API-ключей (per-client авторизация)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    key_hash TEXT NOT NULL UNIQUE,
+                    type TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                )
+            """)
+
             # Индексы для быстрого поиска
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_errors_job ON errors(job_id)")
+
+            # Миграция: добавить client_name в таблицу jobs (если отсутствует)
+            cursor.execute("PRAGMA table_info(jobs)")
+            jobs_cols = {row[1] for row in cursor.fetchall()}
+            if "client_name" not in jobs_cols:
+                cursor.execute("ALTER TABLE jobs ADD COLUMN client_name TEXT")
+
+            # Миграция: добавить client_name в таблицу webhooks (если отсутствует)
+            cursor.execute("PRAGMA table_info(webhooks)")
+            webhooks_cols = {row[1] for row in cursor.fetchall()}
+            if "client_name" not in webhooks_cols:
+                cursor.execute("ALTER TABLE webhooks ADD COLUMN client_name TEXT")
 
             logger.info(f"Database initialized at {self.db_path}")
 
@@ -122,7 +148,8 @@ class Database:
         directory: Optional[str] = None,
         language: str = "ru",
         model: str = "small",
-        total_items: int = 1
+        total_items: int = 1,
+        client_name: Optional[str] = None
     ) -> str:
         """
         Создать новую задачу транскрипции
@@ -134,6 +161,7 @@ class Database:
             language: Язык транскрипции
             model: Модель Whisper
             total_items: Всего элементов для обработки
+            client_name: Имя авторизованного клиента (если есть)
 
         Returns:
             ID созданной задачи
@@ -146,14 +174,14 @@ class Database:
                 INSERT INTO jobs (
                     id, status, file_path, directory, language, model,
                     progress_current, progress_total, progress_percentage,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, updated_at, client_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 job_id, JobStatus.PENDING.value, file_path, directory, language, model,
-                0, total_items, 0.0, now, now
+                0, total_items, 0.0, now, now, client_name
             ))
 
-        logger.info(f"Created job {job_id}: file={file_path}, dir={directory}, model={model}")
+        logger.info(f"Created job {job_id}: file={file_path}, dir={directory}, model={model}, client={client_name}")
         return job_id
 
     def update_job_status(
@@ -274,6 +302,7 @@ class Database:
                 directory=row['directory'],
                 language=row['language'],
                 model=row['model'],
+                client_name=row['client_name'] if 'client_name' in row.keys() else None,
                 progress=JobProgress(
                     current=row['progress_current'],
                     total=row['progress_total'],
@@ -334,6 +363,7 @@ class Database:
                     directory=row['directory'],
                     language=row['language'],
                     model=row['model'],
+                    client_name=row['client_name'] if 'client_name' in row.keys() else None,
                     progress=JobProgress(
                         current=row['progress_current'],
                         total=row['progress_total'],
@@ -409,13 +439,14 @@ class Database:
     # WEBHOOKS
     # ========================================================================
 
-    def create_webhook(self, url: str, event_type: str = "job_completed") -> str:
+    def create_webhook(self, url: str, event_type: str = "job_completed", client_name: Optional[str] = None) -> str:
         """
         Создать новый вебхук.
 
         Args:
             url: URL для POST-уведомлений
             event_type: Тип события (на данный момент: job_completed)
+            client_name: Имя клиента (если авторизован)
 
         Returns:
             ID созданного вебхука
@@ -424,11 +455,11 @@ class Database:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO webhooks (id, url, event_type, active, created_at)
-                VALUES (?, ?, ?, 1, ?)
-            """, (webhook_id, url, event_type, datetime.now().isoformat()))
+                INSERT INTO webhooks (id, url, event_type, active, created_at, client_name)
+                VALUES (?, ?, ?, 1, ?, ?)
+            """, (webhook_id, url, event_type, datetime.now().isoformat(), client_name))
 
-        logger.info(f"Created webhook {webhook_id}: {url}")
+        logger.info(f"Created webhook {webhook_id}: {url}, client={client_name}")
         return webhook_id
 
     def list_webhooks(self, active: Optional[bool] = None) -> List[WebhookInfo]:
@@ -456,7 +487,8 @@ class Database:
             url=row["url"],
             event_type=row["event_type"],
             active=bool(row["active"]),
-            created_at=datetime.fromisoformat(row["created_at"])
+            created_at=datetime.fromisoformat(row["created_at"]),
+            client_name=row["client_name"] if "client_name" in row.keys() else None
         ) for row in rows]
 
     def delete_webhook(self, webhook_id: str) -> bool:
@@ -477,6 +509,80 @@ class Database:
         if deleted:
             logger.info(f"Deleted webhook {webhook_id}")
         return deleted
+
+    # ========================================================================
+    # API KEYS (per-client авторизация)
+    # ========================================================================
+
+    @staticmethod
+    def _hash_key(raw_key: str) -> str:
+        """SHA-256 хеш ключа (хранится в БД, секрет не хранится в открытом виде)."""
+        return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+    def has_api_keys(self) -> bool:
+        """Есть ли хотя бы один активный API-ключ."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM api_keys WHERE active = 1")
+            return cursor.fetchone()[0] > 0
+
+    def get_key_by_hash(self, key_hash: str) -> Optional[KeyInfo]:
+        """Найти активный ключ по хешу (None, если не найден)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,))
+            row = cursor.fetchone()
+        if not row or not row["active"]:
+            return None
+        return KeyInfo(
+            id=row["id"], name=row["name"], type=row["type"],
+            active=bool(row["active"]), created_at=datetime.fromisoformat(row["created_at"])
+        )
+
+    def create_key(self, name: str, type: str = "user") -> Tuple[str, str]:
+        """
+        Создать новый API-ключ.
+
+        Args:
+            name: Имя клиента (user/service)
+            type: Тип клиента (ClientType)
+
+        Returns:
+            (key_id, raw_key) — секретный ключ возвращается один раз, при создании
+        """
+        raw_key = f"vk_{secrets.token_hex(16)}"
+        key_id = str(uuid.uuid4())
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO api_keys (id, name, key_hash, type, active, created_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+            """, (key_id, name, self._hash_key(raw_key), type, datetime.now().isoformat()))
+
+        logger.info(f"Created API key {key_id}: name={name}, type={type}")
+        return key_id, raw_key
+
+    def list_keys(self) -> List[KeyInfo]:
+        """Список API-ключей (без секретов)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute("SELECT * FROM api_keys ORDER BY created_at").fetchall()
+        return [KeyInfo(
+            id=row["id"], name=row["name"], type=row["type"],
+            active=bool(row["active"]), created_at=datetime.fromisoformat(row["created_at"])
+        ) for row in rows]
+
+    def revoke_key(self, key_id: str) -> bool:
+        """
+        Отозвать ключ (active = 0). Возвращает True, если ключ найден.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE api_keys SET active = 0 WHERE id = ?", (key_id,))
+            revoked = cursor.rowcount > 0
+        if revoked:
+            logger.info(f"Revoked API key {key_id}")
+        return revoked
 
     def mark_stale_processing(self, days: int = 7) -> int:
         """

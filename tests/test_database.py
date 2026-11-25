@@ -1,6 +1,6 @@
 import sqlite3
 
-from models import JobStatus
+from models import ClientType, JobStatus
 
 
 def test_create_job_defaults(db):
@@ -72,6 +72,25 @@ def test_cleanup_old_jobs(db):
         conn.execute("UPDATE jobs SET completed_at = datetime('now', '-40 days')")
         conn.commit()
     assert db.cleanup_old_jobs(30) == 1
+
+
+def test_api_keys_crud(db):
+    assert not db.has_api_keys()
+    key_id, raw_key = db.create_key("my-service", "service")
+    assert db.has_api_keys()
+    client = db.get_key_by_hash(db._hash_key(raw_key))
+    assert client is not None
+    assert client.name == "my-service"
+    assert client.type == ClientType.SERVICE
+    assert client.active is True
+
+    keys = db.list_keys()
+    assert len(keys) == 1 and keys[0].name == "my-service"
+
+    assert db.revoke_key(key_id)
+    assert db.get_key_by_hash(db._hash_key(raw_key)) is None
+    keys = db.list_keys()
+    assert len(keys) == 1 and keys[0].active is False
 
 
 def test_webhooks_crud(db):

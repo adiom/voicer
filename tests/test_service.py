@@ -127,6 +127,36 @@ def test_webhooks_endpoints(client):
     assert r.status_code == 404
 
 
+def test_keys_endpoints(client):
+    r = client.post("/keys", json={"name": "test-svc", "type": "service"})
+    assert r.status_code == 201
+    data = r.json()
+    assert data["name"] == "test-svc"
+    assert data["type"] == "service"
+    assert data["raw_key"].startswith("vk_")
+
+    r = client.get("/keys")
+    assert r.status_code == 200
+    assert any(k["name"] == "test-svc" for k in r.json())
+
+    r = client.delete("/keys/nonexistent-id")
+    assert r.status_code == 404
+    r = client.delete(f"/keys/{data['key_id']}")
+    assert r.status_code == 200
+
+
+def test_job_client_name_recorded(db, client, tmp_path):
+    key_id, raw_key = db.create_key("mobile-app", "user")
+    audio = tmp_path / "in.wav"
+    audio.write_bytes(b"fake audio")
+    r = client.post("/transcribe/file", json={"file_path": str(audio)}, headers={"Authorization": f"Bearer {raw_key}"})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    job = wait_completed(client, job_id)
+    assert job["status"] == "completed"
+    assert job["client_name"] == "mobile-app"
+
+
 def test_transcribe_upload_params(client):
     r = client.post(
         "/transcribe",

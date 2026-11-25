@@ -4,6 +4,7 @@ FastAPI service для транскрипции аудио с faster-whisper
 import os
 import uuid
 import json
+import hashlib
 import logging
 import asyncio
 import threading
@@ -27,7 +28,7 @@ load_dotenv()
 from models import (
     TranscriptionRequest, BatchRequest, AutoProcessRequest, JobCreateResponse,
     JobInfo, JobListResponse, HealthResponse, ModelInfo, ExportFormat,
-    JobStatus, WebhookCreateRequest
+    JobStatus, WebhookCreateRequest, ClientInfo, ClientType, CreateKeyRequest
 )
 from database import Database
 from transcriber import TranscriptionEngine
@@ -53,6 +54,9 @@ class RequestIdFilter(logging.Filter):
 logger = logging.getLogger(__name__)
 for handler in logging.getLogger().handlers:
     handler.addFilter(RequestIdFilter())
+
+# Идентификатор инстанса (для децентрализованного деплоя нескольких Voicer)
+INSTANCE_ID = os.environ.get("VOICER_INSTANCE_ID") or str(uuid.uuid4())
 
 # Глобальные объекты
 db: Optional[Database] = None
@@ -195,14 +199,33 @@ async def add_request_id(request: Request, call_next):
 # API Key authentication
 security = HTTPBearer(auto_error=False)
 
-async def verify_api_key(
+
+def _hash_key(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+async def get_current_client(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security)
-):
-    api_key = os.environ.get("API_KEY")
-    if not api_key:
-        return  # API_KEY не настроен — аутентификация не требуется
-    if not credentials or credentials.credentials != api_key:
-        raise HTTPException(status_code=403, detail="Invalid API key")
+) -> Optional[ClientInfo]:
+    """
+    Авторизация: возвращает ClientInfo авторизованного клиента или None.
+
+    Порядок:
+    1. Глобальный API_KEY (обратная совместимость) → клиент admin.
+    2. Per-client ключ из БД (vk_...).
+    3. Если нет ни глобального ключа, ни ключей в БД — открытый доступ (None).
+    4. Иначе 403.
+    """
+    global_key = os.environ.get("API_KEY")
+    if credentials and credentials.credentials:
+        if global_key and credentials.credentials == global_key:
+            return ClientInfo(id="env", name="admin", type=ClientType.ADMIN)
+        client = db.get_key_by_hash(_hash_key(credentials.credentials))
+        if client is not None:
+            return client
+    if not global_key and not db.has_api_keys():
+        return None
+    raise HTTPException(status_code=403, detail="Invalid API key")
 
 
 # ============================================================================
@@ -219,7 +242,8 @@ async def health_check():
             version="1.0.0",
             models_loaded=[engine.model_name],
             active_jobs=stats["active_jobs"],
-            total_jobs=stats["total_jobs"]
+            total_jobs=stats["total_jobs"],
+            instance_id=INSTANCE_ID
         )
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -228,11 +252,12 @@ async def health_check():
             version="1.0.0",
             models_loaded=[engine.model_name] if engine else [],
             active_jobs=0,
-            total_jobs=0
+            total_jobs=0,
+            instance_id=INSTANCE_ID
         )
 
 
-@app.get("/models", response_model=List[ModelInfo], dependencies=[Depends(verify_api_key)])
+@app.get("/models", response_model=List[ModelInfo], dependencies=[Depends(get_current_client)])
 async def list_models():
     """Получить список доступных моделей Whisper"""
     model_info = TranscriptionEngine.get_model_info()
@@ -254,7 +279,7 @@ async def list_models():
 # SINGLE FILE TRANSCRIPTION
 # ============================================================================
 
-@app.post("/transcribe", response_model=JobCreateResponse, dependencies=[Depends(verify_api_key)])
+@app.post("/transcribe", response_model=JobCreateResponse, dependencies=[Depends(get_current_client)])
 async def transcribe_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -262,7 +287,8 @@ async def transcribe_upload(
     model: Optional[str] = None,
     word_timestamps: bool = False,
     vad_filter: bool = True,
-    initial_prompt: Optional[str] = None
+    initial_prompt: Optional[str] = None,
+    client: Optional[ClientInfo] = Depends(get_current_client)
 ):
     """
     Upload и транскрибирование аудио файла
@@ -308,7 +334,7 @@ async def transcribe_upload(
 
     # Создать задачу
     model_name = model or config["whisper"]["default_model"]
-    db.create_job(job_id, str(file_path), language=language, model=model_name)
+    db.create_job(job_id, str(file_path), language=language, model=model_name, client_name=client.name if client else None)
 
     # Запустить транскрипцию в фоне
     background_tasks.add_task(
@@ -329,8 +355,12 @@ async def transcribe_upload(
     )
 
 
-@app.post("/transcribe/file", response_model=JobCreateResponse, dependencies=[Depends(verify_api_key)])
-async def transcribe_file(request: TranscriptionRequest, background_tasks: BackgroundTasks):
+@app.post("/transcribe/file", response_model=JobCreateResponse, dependencies=[Depends(get_current_client)])
+async def transcribe_file(
+    request: TranscriptionRequest,
+    background_tasks: BackgroundTasks,
+    client: Optional[ClientInfo] = Depends(get_current_client)
+):
     """
     Транскрибирование существующего файла по пути
     """
@@ -342,7 +372,8 @@ async def transcribe_file(request: TranscriptionRequest, background_tasks: Backg
         job_id,
         request.file_path,
         language=request.language,
-        model=request.model.value
+        model=request.model.value,
+        client_name=client.name if client else None
     )
 
     background_tasks.add_task(
@@ -367,8 +398,12 @@ async def transcribe_file(request: TranscriptionRequest, background_tasks: Backg
 # BATCH PROCESSING
 # ============================================================================
 
-@app.post("/transcribe/batch", response_model=JobCreateResponse, dependencies=[Depends(verify_api_key)])
-async def transcribe_batch(request: BatchRequest, background_tasks: BackgroundTasks):
+@app.post("/transcribe/batch", response_model=JobCreateResponse, dependencies=[Depends(get_current_client)])
+async def transcribe_batch(
+    request: BatchRequest,
+    background_tasks: BackgroundTasks,
+    client: Optional[ClientInfo] = Depends(get_current_client)
+):
     """
     Batch обработка директории с аудио файлами
     """
@@ -387,7 +422,8 @@ async def transcribe_batch(request: BatchRequest, background_tasks: BackgroundTa
         directory=str(directory),
         language=request.language,
         model=request.model.value,
-        total_items=len(audio_files)
+        total_items=len(audio_files),
+        client_name=client.name if client else None
     )
 
     background_tasks.add_task(
@@ -407,8 +443,12 @@ async def transcribe_batch(request: BatchRequest, background_tasks: BackgroundTa
     )
 
 
-@app.post("/transcribe/auto", response_model=JobCreateResponse, dependencies=[Depends(verify_api_key)])
-async def transcribe_auto(request: AutoProcessRequest, background_tasks: BackgroundTasks):
+@app.post("/transcribe/auto", response_model=JobCreateResponse, dependencies=[Depends(get_current_client)])
+async def transcribe_auto(
+    request: AutoProcessRequest,
+    background_tasks: BackgroundTasks,
+    client: Optional[ClientInfo] = Depends(get_current_client)
+):
     """
     Автоматическая обработка chunks директорий из run.py
     """
@@ -426,7 +466,8 @@ async def transcribe_auto(request: AutoProcessRequest, background_tasks: Backgro
         directory=str(base_path),
         language=request.language,
         model=request.model.value,
-        total_items=len(chunks_dirs)
+        total_items=len(chunks_dirs),
+        client_name=client.name if client else None
     )
 
     background_tasks.add_task(
@@ -448,7 +489,7 @@ async def transcribe_auto(request: AutoProcessRequest, background_tasks: Backgro
 # JOB MANAGEMENT
 # ============================================================================
 
-@app.get("/jobs", response_model=JobListResponse, dependencies=[Depends(verify_api_key)])
+@app.get("/jobs", response_model=JobListResponse, dependencies=[Depends(get_current_client)])
 async def list_jobs(
     status: Optional[JobStatus] = None,
     limit: int = 50,
@@ -468,7 +509,7 @@ async def list_jobs(
     )
 
 
-@app.get("/jobs/{job_id}", response_model=JobInfo, dependencies=[Depends(verify_api_key)])
+@app.get("/jobs/{job_id}", response_model=JobInfo, dependencies=[Depends(get_current_client)])
 async def get_job_status(job_id: str):
     """
     Получить статус конкретной задачи
@@ -480,7 +521,7 @@ async def get_job_status(job_id: str):
     return job
 
 
-@app.get("/jobs/{job_id}/result", dependencies=[Depends(verify_api_key)])
+@app.get("/jobs/{job_id}/result", dependencies=[Depends(get_current_client)])
 async def get_job_result(job_id: str):
     """
     Получить результат транскрипции
@@ -498,7 +539,7 @@ async def get_job_result(job_id: str):
     return job.result
 
 
-@app.delete("/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
+@app.delete("/jobs/{job_id}", dependencies=[Depends(get_current_client)])
 async def delete_job(job_id: str):
     """
     Удалить задачу
@@ -514,18 +555,21 @@ async def delete_job(job_id: str):
 # WEBHOOKS
 # ============================================================================
 
-@app.post("/webhooks", status_code=201, response_model=dict, dependencies=[Depends(verify_api_key)])
-async def create_webhook(payload: WebhookCreateRequest):
-    webhook_id = db.create_webhook(payload.url, payload.event_type)
+@app.post("/webhooks", status_code=201, response_model=dict, dependencies=[Depends(get_current_client)])
+async def create_webhook(
+    payload: WebhookCreateRequest,
+    client: Optional[ClientInfo] = Depends(get_current_client)
+):
+    webhook_id = db.create_webhook(payload.url, payload.event_type, client_name=client.name if client else None)
     return {"id": webhook_id, "status": "active"}
 
 
-@app.get("/webhooks", response_model=List[dict], dependencies=[Depends(verify_api_key)])
+@app.get("/webhooks", response_model=List[dict], dependencies=[Depends(get_current_client)])
 async def list_webhooks():
     return [w.model_dump() for w in db.list_webhooks(active=None)]
 
 
-@app.delete("/webhooks/{webhook_id}", dependencies=[Depends(verify_api_key)])
+@app.delete("/webhooks/{webhook_id}", dependencies=[Depends(get_current_client)])
 async def delete_webhook(webhook_id: str):
     success = db.delete_webhook(webhook_id)
     if not success:
@@ -534,10 +578,39 @@ async def delete_webhook(webhook_id: str):
 
 
 # ============================================================================
+# API KEYS (per-client авторизация)
+# ============================================================================
+
+@app.post("/keys", status_code=201, response_model=dict, dependencies=[Depends(get_current_client)])
+async def create_key(payload: CreateKeyRequest):
+    """
+    Создать API-ключ для нового клиента (user/service).
+    Секретный ключ возвращается один раз при создании — сохраните его!
+    """
+    key_id, raw_key = db.create_key(payload.name, payload.type.value)
+    return {"key_id": key_id, "name": payload.name, "type": payload.type.value, "raw_key": raw_key}
+
+
+@app.get("/keys", response_model=List[dict], dependencies=[Depends(get_current_client)])
+async def list_keys():
+    """Список ключей (без секретов)."""
+    return [k.model_dump() for k in db.list_keys()]
+
+
+@app.delete("/keys/{key_id}", response_model=dict, dependencies=[Depends(get_current_client)])
+async def revoke_key(key_id: str):
+    """Отозвать API-ключ (active = 0)."""
+    ok = db.revoke_key(key_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Key not found")
+    return {"message": "Key revoked"}
+
+
+# ============================================================================
 # EXPORT ENDPOINTS
 # ============================================================================
 
-@app.get("/jobs/{job_id}/export/{format}", dependencies=[Depends(verify_api_key)])
+@app.get("/jobs/{job_id}/export/{format}", dependencies=[Depends(get_current_client)])
 async def export_result(job_id: str, format: ExportFormat):
     """
     Экспорт результата в различные форматы (SRT, VTT, JSON, TXT)

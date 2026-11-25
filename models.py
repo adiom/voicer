@@ -92,6 +92,36 @@ class JobProgress(BaseModel):
     eta_seconds: Optional[float] = Field(None, description="Оценочное время завершения")
 
 
+class ClientType(str, Enum):
+    """Типы авторизованных клиентов"""
+    USER = "user"
+    SERVICE = "service"
+    ADMIN = "admin"
+
+
+class ClientInfo(BaseModel):
+    """Идентификатор авторизованного клиента (человек или сервис)"""
+    id: str = Field(..., description="ID клиента")
+    name: str = Field(..., description="Имя/название клиента (например, 'my-bot' или 'roman')")
+    type: ClientType = Field(..., description="Тип клиента")
+
+
+class CreateKeyRequest(BaseModel):
+    """Запрос на создание API-ключа"""
+    name: str = Field(..., min_length=1, max_length=100, description="Имя клиента (пользователь или сервис)")
+    type: ClientType = Field(ClientType.USER, description="Тип клиента")
+    description: Optional[str] = Field(None, description="Описание (опционально)")
+
+
+class KeyInfo(BaseModel):
+    """Информация об API-ключе (секретный ключ не возвращается)"""
+    id: str = Field(..., description="ID ключа")
+    name: str = Field(..., description="Имя клиента")
+    type: ClientType = Field(..., description="Тип клиента")
+    active: bool = Field(True, description="Активен ли ключ")
+    created_at: datetime = Field(..., description="Время создания")
+
+
 class JobInfo(BaseModel):
     """Информация о задаче транскрипции"""
     id: str = Field(..., description="ID задачи")
@@ -100,6 +130,7 @@ class JobInfo(BaseModel):
     directory: Optional[str] = Field(None, description="Директория (для batch)")
     language: str = Field(..., description="Язык транскрипции")
     model: str = Field(..., description="Модель Whisper")
+    client_name: Optional[str] = Field(None, description="Имя клиента (если авторизован)")
     progress: JobProgress = Field(default_factory=JobProgress, description="Прогресс выполнения")
     created_at: datetime = Field(default_factory=datetime.now, description="Время создания")
     updated_at: datetime = Field(default_factory=datetime.now, description="Время обновления")
@@ -130,6 +161,7 @@ class HealthResponse(BaseModel):
     models_loaded: List[str] = Field(default_factory=list, description="Загруженные модели")
     active_jobs: int = Field(0, description="Активные задачи")
     total_jobs: int = Field(0, description="Всего задач")
+    instance_id: Optional[str] = Field(None, description="Идентификатор инстанса (VOICER_INSTANCE_ID)")
 
 
 class ModelInfo(BaseModel):
@@ -163,6 +195,7 @@ class WebhookInfo(BaseModel):
     event_type: str = Field(..., description="Тип события")
     active: bool = Field(True, description="Активен ли вебхук")
     created_at: datetime = Field(default_factory=datetime.now, description="Время создания")
+    client_name: Optional[str] = Field(None, description="Имя клиента (если авторизован)")
 
 
 class WebhookCreateRequest(BaseModel):
