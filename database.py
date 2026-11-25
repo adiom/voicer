@@ -32,6 +32,8 @@ class Database:
         """Контекстный менеджер для соединения с БД"""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        # Включаем ссылочное целостность, чтобы ON DELETE CASCADE работал
+        conn.execute("PRAGMA foreign_keys = ON")
         try:
             yield conn
             conn.commit()
@@ -391,6 +393,29 @@ class Database:
         if deleted:
             logger.info(f"Deleted job {job_id}")
         return deleted
+
+    def mark_stale_processing(self, days: int = 7) -> int:
+        """
+        Отметить старые задачи со статусом "processing" как failed
+        (например, после перезапуска сервиса, когда фоновая задача умерла).
+
+        Args:
+            days: Возраст задачи (в днях), с которого считаем их stale
+
+        Returns:
+            Количество обновлённых задач
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
+            cursor.execute("""
+                UPDATE jobs
+                SET status = ?, updated_at = ?
+                WHERE status = ? AND datetime(updated_at) < datetime('now', ?)
+            """, (JobStatus.FAILED.value, now, JobStatus.PROCESSING.value, f'-{days} days'))
+            return cursor.rowcount
+
+        logger.info(f"Marked stale processing jobs as failed")
 
     def get_statistics(self) -> Dict[str, Any]:
         """

@@ -100,6 +100,11 @@ async def lifespan(app: FastAPI):
     # Инициализация БД
     db = Database(config["database"]["path"])
 
+    # Сброс stale-задач (статус processing) после перезапуска сервиса
+    stale = db.mark_stale_processing()
+    if stale > 0:
+        logger.info(f"Marked {stale} stale processing jobs as failed")
+
     # Cleanup старых задач
     cleanup_days = config["database"].get("auto_cleanup_days", 30)
     if cleanup_days > 0:
@@ -624,6 +629,12 @@ def process_transcription(
     except Exception as e:
         logger.error(f"Job {job_id} failed: {e}")
         db.update_job_status(job_id, JobStatus.FAILED, str(e))
+
+        # Удалить загруженный файл (на успешном пути удаляется выше)
+        try:
+            Path(file_path).unlink(missing_ok=True)
+        except Exception as cleanup_err:
+            logger.warning(f"Failed to delete file {file_path}: {cleanup_err}")
 
         # Уведомить WebSocket клиентов об ошибке
         try:
