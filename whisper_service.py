@@ -5,6 +5,7 @@ import os
 import uuid
 import logging
 import asyncio
+import threading
 from pathlib import Path
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -55,6 +56,7 @@ db: Optional[Database] = None
 engine: Optional[TranscriptionEngine] = None
 config: dict = {}
 active_websockets: dict = {}  # job_id -> list of websockets
+engine_lock = threading.Lock()  # engine.transcribe_file не гарантирует thread-safety
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -510,6 +512,8 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
         while True:
             # Отправлять обновления статуса
             job = db.get_job(job_id)
+            if job is None:
+                break
             if job:
                 current_state = (
                     job.status,
@@ -558,6 +562,8 @@ async def notify_websockets(job_id: str):
     """Уведомить все WebSocket соединения о изменении статуса"""
     if job_id in active_websockets:
         job = db.get_job(job_id)
+        if job is None:
+            return
         message = {
             "job_id": job_id,
             "status": job.status.value,
@@ -592,14 +598,16 @@ def process_transcription(
                 current_file=Path(file_path).name
             )
 
-        result = engine.transcribe_file(
-            file_path,
-            language=language,
-            word_timestamps=word_timestamps,
-            vad_filter=vad_filter,
-            initial_prompt=initial_prompt,
-            progress_callback=progress_callback
-        )
+        # Сериализуем транскрипции (engine вызывается из потоков)
+        with engine_lock:
+            result = engine.transcribe_file(
+                file_path,
+                language=language,
+                word_timestamps=word_timestamps,
+                vad_filter=vad_filter,
+                initial_prompt=initial_prompt,
+                progress_callback=progress_callback
+            )
 
         db.save_transcription(
             job_id,

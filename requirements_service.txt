@@ -15,6 +15,11 @@ faster-whisper
 
 # Работа с файлами
 aiofiles
+httpx
+
+# Тестирование
+pytest
+pytest-cov
 
 # Конфигурация
 PyYAML

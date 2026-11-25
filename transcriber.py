@@ -7,9 +7,6 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 import json
 
-from faster_whisper import WhisperModel
-from faster_whisper.transcribe import Segment
-
 from models import TranscriptionResult, TranscriptionSegment, WhisperModel as WModel
 
 logger = logging.getLogger(__name__)
@@ -74,8 +71,10 @@ class TranscriptionEngine:
         return "cpu"
 
     def _load_model(self):
-        """Загрузка модели Whisper"""
+        """Загрузка модели Whisper (faster-whisper импортируется лениво)"""
         try:
+            from faster_whisper import WhisperModel
+
             logger.info(f"Loading Whisper model '{self.model_name}'...")
             start_time = time.time()
 
@@ -317,7 +316,8 @@ class TranscriptionEngine:
 
         return batch_result["merged_result"]
 
-    def export_srt(self, result: TranscriptionResult, output_path: str):
+    @staticmethod
+    def export_srt(result: TranscriptionResult, output_path: str):
         """
         Экспорт в SRT формат субтитров
 
@@ -328,8 +328,8 @@ class TranscriptionEngine:
         with open(output_path, 'w', encoding='utf-8') as f:
             for i, segment in enumerate(result.segments, start=1):
                 # Формат SRT: часы:минуты:секунды,миллисекунды
-                start_time = self._format_srt_time(segment.start)
-                end_time = self._format_srt_time(segment.end)
+                start_time = TranscriptionEngine._format_srt_time(segment.start)
+                end_time = TranscriptionEngine._format_srt_time(segment.end)
 
                 f.write(f"{i}\n")
                 f.write(f"{start_time} --> {end_time}\n")
@@ -337,7 +337,8 @@ class TranscriptionEngine:
 
         logger.info(f"Exported SRT to {output_path}")
 
-    def export_vtt(self, result: TranscriptionResult, output_path: str):
+    @staticmethod
+    def export_vtt(result: TranscriptionResult, output_path: str):
         """
         Экспорт в WebVTT формат
 
@@ -349,15 +350,16 @@ class TranscriptionEngine:
             f.write("WEBVTT\n\n")
 
             for segment in result.segments:
-                start_time = self._format_vtt_time(segment.start)
-                end_time = self._format_vtt_time(segment.end)
+                start_time = TranscriptionEngine._format_vtt_time(segment.start)
+                end_time = TranscriptionEngine._format_vtt_time(segment.end)
 
                 f.write(f"{start_time} --> {end_time}\n")
                 f.write(f"{segment.text}\n\n")
 
         logger.info(f"Exported VTT to {output_path}")
 
-    def export_json(self, result: TranscriptionResult, output_path: str):
+    @staticmethod
+    def export_json(result: TranscriptionResult, output_path: str):
         """
         Экспорт в JSON формат
 
@@ -370,7 +372,8 @@ class TranscriptionEngine:
 
         logger.info(f"Exported JSON to {output_path}")
 
-    def export_txt(self, result: TranscriptionResult, output_path: str):
+    @staticmethod
+    def export_txt(result: TranscriptionResult, output_path: str):
         """
         Экспорт в простой текстовый формат
 

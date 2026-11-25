@@ -120,3 +120,10 @@ curl https://voicer-production.up.railway.app/jobs/{job_id}/result
 - pydantic, pydantic-settings
 - faster-whisper
 - aiofiles, PyYAML, tqdm
+
+## Tests
+
+```bash
+python3 -m pytest tests/ -q
+```
+(requires `pytest`, `pytest-cov`, `httpx` — installed via `requirements_service.txt`)
